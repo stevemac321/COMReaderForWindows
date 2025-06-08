@@ -8,14 +8,19 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <atomic>
 
 #define MAX_LOADSTRING 100
 #define WM_COM_RECEIVED (WM_APP + 1)
 
 
-struct SerialSettings {
-    int portNumber;  // COM port number
-    DWORD baudRate;  // Baud rate
+struct SerialSettings{
+    int portNumber = 4;      // COM3 by default
+    int baudRate = 115200;   // Default baud rate
+    int dataBits = 8;        // Typical default: 8 data bits
+    int stopBits = 1;        // 1 stop bit
+    char parity = 'N';       // No parity ('N' = None, 'E' = Even, 'O' = Odd)
+    bool flowControl = false; // No flow control by default
 };
 
 // Global Variables:
@@ -25,16 +30,18 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HWND hWnd; // Global variable for the main window
 HWND hEditWnd;
 
+std::shared_ptr<SerialSettings> g_serialSettings = std::make_shared<SerialSettings>();
+std::atomic<bool> keepPolling{ false };  // Shared stop flag
 
 // Forward declarations of functions included in this code module:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK SerialSettingsDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 
 // user forward declarations
 void StartPolling(std::shared_ptr<SerialSettings> settings);
-SerialSettings GetDefaultSerialSettings();
 HANDLE OpenSerialPort(int portNumber, DWORD baudRate);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -146,6 +153,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_CREATE:
+    {
         RECT clientRect;
         GetClientRect(hWnd, &clientRect); // Get main window client area dimensions
 
@@ -154,6 +162,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             10, 10, clientRect.right - 20, clientRect.bottom - 20, // Dynamic size
             hWnd, (HMENU)IDC_CLIENT, hInst, NULL);
 
+    }
         break;
 
     case WM_COM_RECEIVED:
@@ -170,6 +179,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break;
 
+    case WM_CTLCOLORSTATIC:
+    {
+        HDC hdc = (HDC)wParam;
+        HWND hwndCtrl = (HWND)lParam;
+        if (hwndCtrl == hEditWnd)
+        {
+            SetTextColor(hdc, RGB(255, 255, 255));  // white text
+            SetBkColor(hdc, RGB(0, 0, 0));          // black background
+            static HBRUSH hBrush = CreateSolidBrush(RGB(0, 0, 0));
+            return (INT_PTR)hBrush;
+        }
+        break;
+    }
+
+
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
@@ -179,19 +203,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
                 break;
+
+            case ID_PORT_SETTINGS:
+                DialogBox(hInst, MAKEINTRESOURCE(IDD_SERIAL_SETTINGS), hWnd, SerialSettingsDlgProc);
+                break;
+
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
-            
+
+            case ID_FILE_CLEARSCREEN:
+                SetWindowTextW(hEditWnd, L"");
+                break;
+
             case ID_PORT_STARTPOLLING:
             {
-                auto settings = std::make_shared<SerialSettings>(GetDefaultSerialSettings());
-                StartPolling(settings);  
+                keepPolling = true;
+                StartPolling(g_serialSettings);
             }
             break;
 
             case ID_PORT_STOPPOLLING:
-                //StopPolling();
+                keepPolling = false;
                 break;
 
             default:
@@ -235,6 +268,96 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     }
     return (INT_PTR)FALSE;
 }
+INT_PTR CALLBACK SerialSettingsDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_INITDIALOG:
+    {
+        // Populate Port Number listbox (COM1 to COM10)
+        for (int port = 1; port <= 10; ++port)
+        {
+            char buf[10];
+            sprintf_s(buf, sizeof(buf), "COM%d", port);
+            SendDlgItemMessageA(hDlg, IDC_LIST_PORTNUM, LB_ADDSTRING, 0, (LPARAM)buf);
+        }
+
+        // Populate Baud Rate combo box
+        const char* baudRates[] = {
+            "128000", "115200", "57600", "56000", "38400", "19200",
+            "14400", "9600", "7200", "4800", "2400", "1800",
+            "1200", "600", "300", "150", "134", "110", "75"
+        };
+        
+        for (int i = 0; i < (int)(sizeof(baudRates) / sizeof(baudRates[0])); ++i)
+        {
+            SendDlgItemMessageA(hDlg, IDC_COMBO_BAUDRATE, CB_ADDSTRING, 0, (LPARAM)baudRates[i]);
+        }
+
+
+        // Populate Data Bits listbox (4 to 8)
+        for (int dataBits = 4; dataBits <= 8; ++dataBits)
+        {
+            char buf[3];
+            sprintf_s(buf, sizeof(buf), "%d", dataBits);
+            SendDlgItemMessageA(hDlg, IDC_LIST_DATABITS, LB_ADDSTRING, 0, (LPARAM)buf);
+        }
+
+        // Populate Parity listbox
+        const char* parityOptions[] = { "None", "Even", "Odd", "Mark", "Space" };
+        for (int i = 0; i < (int)(sizeof(parityOptions) / sizeof(parityOptions[0])); ++i)
+        {
+            SendDlgItemMessageA(hDlg, IDC_LIST_PARITY, LB_ADDSTRING, 0, (LPARAM)parityOptions[i]);
+        }
+
+        // Populate Flow Control listbox
+        const char* flowOptions[] = { "None", "Xon/Xoff", "Hardware" };
+        for (int i = 0; i < (int)(sizeof(flowOptions) / sizeof(flowOptions[0])); ++i)
+        {
+            SendDlgItemMessageA(hDlg, IDC_LIST_FLOWCONTROL, LB_ADDSTRING, 0, (LPARAM)flowOptions[i]);
+        }
+
+        // Populate Stop Bits listbox (assuming you kept it a listbox, IDC_LIST_STOPBITS)
+        const char* stopBitsOptions[] = { "1", "1.5", "2" };
+        for (int i = 0; i < (int)(sizeof(stopBitsOptions) / sizeof(stopBitsOptions[0])); ++i)
+        {
+            SendDlgItemMessageA(hDlg, IDC_LIST_STOPBITS, LB_ADDSTRING, 0, (LPARAM)stopBitsOptions[i]);
+        }
+
+        // Set default selections based on your default SerialSettings values:
+        // port 3 (COM3), baud 115200, data bits 8, parity None, flow None, stop bits 1
+        SendDlgItemMessage(hDlg, IDC_LIST_PORTNUM, LB_SETCURSEL, 2, 0); // zero-based index: COM3 is 2
+        SendDlgItemMessage(hDlg, IDC_COMBO_BAUDRATE, CB_SETCURSEL, 17, 0); // 115200 is index 17 in baudRates[]
+        SendDlgItemMessage(hDlg, IDC_LIST_DATABITS, LB_SETCURSEL, 4, 0); // 8 data bits (4 is index for 8)
+        SendDlgItemMessage(hDlg, IDC_LIST_PARITY, LB_SETCURSEL, 0, 0); // None parity
+        SendDlgItemMessage(hDlg, IDC_LIST_FLOWCONTROL, LB_SETCURSEL, 0, 0); // None flow control
+        SendDlgItemMessage(hDlg, IDC_LIST_STOPBITS, LB_SETCURSEL, 0, 0); // 1 stop bit
+
+        SendDlgItemMessageA(hDlg, IDC_COMBO_BAUDRATE, CB_SETCURSEL, 7, 0); // set default value
+
+
+        return (INT_PTR)TRUE;
+    }
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDOK:
+        {
+            // TODO: Read selections from controls, update your g_serialSettings here
+
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
 void StartPolling(std::shared_ptr<SerialSettings> settings) {
     std::thread([settings]() {
         HANDLE hSerial = OpenSerialPort(settings->portNumber, settings->baudRate);
@@ -247,7 +370,7 @@ void StartPolling(std::shared_ptr<SerialSettings> settings) {
         char buffer[bufferSize];
         DWORD bytesRead;
 
-        while (true) {
+        while (keepPolling) {
             if (ReadFile(hSerial, buffer, bufferSize, &bytesRead, NULL) && bytesRead > 0) {
                 // Convert from bytes (ASCII) to wstring
                 int wlen = MultiByteToWideChar(CP_ACP, 0, buffer, bytesRead, NULL, 0);
@@ -295,13 +418,6 @@ HANDLE OpenSerialPort(int portNumber, DWORD baudRate) {
     SetCommTimeouts(hSerial, &timeouts); // Apply timeouts
     
     return hSerial;
-}
-SerialSettings GetDefaultSerialSettings()
-{
-    SerialSettings settings;
-    settings.portNumber = 4;
-    settings.baudRate = 115200;
-    return settings;
 }
 
 
