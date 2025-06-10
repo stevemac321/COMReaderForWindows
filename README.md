@@ -12,7 +12,8 @@ A simple Windows GUI application to read serial data from a COM port — similar
 - ✅ Scrollable, read-only display window
 - ✅ Minimal build — just Win32 C++, no frameworks
 - ✅ Menu bar with placeholders for future settings (TODOs welcome!)
-
+-Multithreaded Architecture
+This project also demonstrates how to separate the main UI thread from a background worker thread in a Win32 GUI application. The COM port is polled on a dedicated thread to avoid blocking the message loop, and results are safely posted back to the UI using PostMessage. This architecture keeps the interface responsive even while handling continuous or blocking I/O operations.
 ---
 
 ## 🔧 How to Build
